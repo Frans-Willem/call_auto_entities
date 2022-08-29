@@ -1,0 +1,10 @@
+{
+	"domain": "with_auto_entities",
+	"name": "With Auto Entities",
+	"documentation": "about:blank",
+	"dependencies": [],
+	"codeowners": [],
+	"requirements": [],
+	"iot_class": "local_push",
+	"version": "0.1.0"
+}
