@@ -1,2 +1,2 @@
-with_auto_entities:
-  description: With Auto Entities Service
+call_auto_entities:
+  description: Call Auto Entities Service

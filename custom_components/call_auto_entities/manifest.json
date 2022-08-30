@@ -1,6 +1,6 @@
 {
-	"domain": "with_auto_entities",
-	"name": "With Auto Entities",
+	"domain": "call_auto_entities",
+	"name": "Call Auto Entities",
 	"documentation": "about:blank",
 	"dependencies": [],
 	"codeowners": [],

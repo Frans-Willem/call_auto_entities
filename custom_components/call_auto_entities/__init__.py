@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers.typing import ConfigType
 from homeassistant import helpers
 
-DOMAIN = "with_auto_entities"
+DOMAIN = "call_auto_entities"
 _LOGGER = logging.getLogger(__name__)
 
 def match(pattern, value):
