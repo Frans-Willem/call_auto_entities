@@ -1,4 +1,4 @@
-# call_auto_entities
+# call\_auto\_entities
 Home Assistant integration to call services with a filtered list of entities, with a filter syntax equivalent to the popular lovelace auto entities plugin.
 
 ## Examples
@@ -16,6 +16,8 @@ data:
 	excludes:
 		- area: Garden
 ```
+This will create or update an old-style group with entity id group.inside\_lights, and all lights that are not in the garden.
+
 ### Update a new-style (helpers defined) group
 ```
 service: call_auto_entities.update_group
@@ -24,6 +26,8 @@ data:
 	includes:
 		- domain: light
 	excludes:
-		- area: Garden
-		- entity_id: light.inside_lights_group
+		- area: Garden # Exclude any outside lights
+		- integration: group # Exclude existing groups
 ```
+This will update a new-style (e.g. helpers) group with entity id light.inside\_lights\_group, and all lights that are not in the garden and are not already a group.
+
