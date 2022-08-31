@@ -2,258 +2,77 @@ from __future__ import annotations
 import logging
 import json
 import re
-from typing import List, Dict, Callable, TypedDict, Optional
+from typing import List, Dict
 
 from homeassistant.core import HomeAssistant, ServiceCall, callback, State
 from homeassistant.helpers.typing import ConfigType
-from homeassistant import helpers
+from .const import DOMAIN, SERVICE_WITH_ARRAY, SERVICE_UPDATE_GROUP
+from .filters import create_filter_from_dictionary
 from homeassistant.helpers.entity_registry import RegistryEntry as EntityEntry
 from homeassistant.helpers.entity_registry import EntityRegistry
-from homeassistant.helpers.device_registry import DeviceRegistry, DeviceEntry
-from homeassistant.helpers.area_registry import AreaRegistry, AreaEntry
+from homeassistant import helpers
+from homeassistant.config_entries import ConfigEntry, ConfigEntries
 
-DOMAIN = "call_auto_entities"
 _LOGGER = logging.getLogger(__name__)
 
-Pattern = object
-FilterFn = Callable[[HomeAssistant, State], bool]
-EntityFilterFn = Callable[[HomeAssistant, EntityEntry], bool]
-DeviceFilterFn = Callable[[HomeAssistant, DeviceEntry], bool]
-AreaFilterFn = Callable[[HomeAssistant, AreaEntry], bool]
-FilterFnBuilder = Callable[[object], FilterFn]
-
-def match(pattern: Pattern, value: object) -> bool:
-    if isinstance(pattern, str) and pattern.startswith("$$"):
-        pattern = pattern[2:]
-        value = json.dumps(value)
-    if isinstance(value, str) and isinstance(pattern, str):
-        if (pattern.startswith("/") and pattern.endswith("/")) or "*" in pattern:
-            if not pattern.startswith("/"):
-                pattern = pattern.replace(".", "\\.").replace("*",".*")
-                pattern = "^" + pattern+ "$"
-            else:
-                pattern = pattern[1:-1]
-            return (re.search(pattern, value) is not None)
-
-    if isinstance(pattern, str) and (isinstance(value, str) or isinstance(value, float)or isinstance(value, int)):
-        if pattern.startswith("<="):
-            return float(value) <= float(pattern[2:])
-        if pattern.startswith(">="):
-            return float(value) >= float(pattern[2:])
-        if pattern.startswith("<"):
-            return float(value) < float(pattern[1:])
-        if pattern.startswith(">"):
-            return float(value) > float(pattern[1:])
-        if pattern.startswith("!"):
-            return not float(value) == float(pattern[1:])
-        if pattern.startswith("="):
-            return float(value) == float(pattern[1:])
-
-    if pattern == value:
-        return True
-    return False
-
-def empty_filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-    return True
-
-def create_group_filter(group_pattern: object) -> FilterFn:
-    if not isinstance(group_pattern, str):
-        _LOGGER.error("group filter should have string type")
-        return empty_filter_fn
-    group_name : str = group_pattern
-
-    def filter(hass: HomeAssistant, entity_state: State) -> bool:
-        group : Optional[State] = hass.states.get(group_pattern)
-        if not group:
-            return False
-        group_members = group.attributes.get("entity_id")
-        if not isinstance(group_members, list):
-            return False
-        return entity_state.entity_id in group_members
-    return filter
-
-def combine_filters_and(filters: List[FilterFn]) -> FilterFn:
-    def filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-        for current_filter_fn in filters:
-            if not current_filter_fn(hass, entity_state):
-                return False
-        return True
-    return filter_fn
-
-def combine_filters_or(filters: List[FilterFn]) -> FilterFn:
-    def filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-        for current_filter_fn in filters:
-            if current_filter_fn(hass, entity_state):
-                return True
-        return False
-    return filter_fn
-
-def create_attribute_filter(attribute_keys: List[str], pattern: Pattern) -> FilterFn:
-    def filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-        value = entity_state.attributes
-        for key in attribute_keys:
-            if isinstance(value, dict):
-                value = value.get(key)
-            elif isinstance(value, list):
-                value = value[int(key)]
-            else:
-                value = None
-        if value is None:
-            return False
-        return match(pattern, value)
-    return filter_fn
-
-def create_attributes_filter(attributes_pattern: object) -> FilterFn:
-    if not isinstance(attributes_pattern, dict):
-        _LOGGER.error("attributes filter should have object type")
-        return empty_filter_fn
-
-    # Assume attributes is a dict
-    current_filters = []
-
-    for attribute_name, attribute_pattern in attributes_pattern.items():
-        if not isinstance(attribute_name, str):
-            _LOGGER.error("attributes filter keys should have string type")
-            continue
-        attribute_name = attribute_name.split(" ")[0] # Drop suffixes
-        attribute_names : List[str] = attribute_name.split(":")
-        current_filters.append(create_attribute_filter(attribute_names, attribute_pattern))
-
-    return combine_filters_and(current_filters)
-
-def create_filter_from_dictionary(d: Dict[str, object]) -> FilterFn:
-    current_filters = []
-
-    for filter_name, pattern in d.items():
-        filter_constructor = filter_constructors.get(filter_name)
-        if filter_constructor is None:
-            _LOGGER.error(f"No filter with name '{filter_name}' available")
-            continue
-        current_filters.append(filter_constructor(pattern))
-
-    return combine_filters_and(current_filters)
-
-def create_not_filter(pattern: object) -> FilterFn:
-    if not isinstance(pattern, dict) or not all(isinstance(key, str) for key in pattern.keys()):
-        _LOGGER.error("not filter should have object argument")
-        return empty_filter_fn
-    # TODO: More checking to see if all keys are indeed strings ?
-    current_filter_fn = create_filter_from_dictionary(pattern)
-    def filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-        return not current_filter_fn(hass, entity_state)
-    return filter_fn
-
-def create_or_filter(patterns: object) -> FilterFn:
-    if not isinstance(patterns, list):
-        _LOGGER.error("or filter should have list argument")
-        return empty_filter_fn
-
-    current_filters = []
-    for pattern in patterns:
-        if not isinstance(pattern, dict) or not all(isinstance(key, str) for key in pattern.keys()):
-            _LOGGER.error("or filter should have list argument of objects")
-            continue
-        current_filters.append(create_filter_from_dictionary(pattern))
-
-    return combine_filters_or(current_filters)
-
-def get_entity_from_state(hass: HomeAssistant, entity_state: State) -> Optional[EntityEntry]:
-    entity_registry : EntityRegistry = helpers.entity_registry.async_get(hass)
-    entity : EntityEntry | None = entity_registry.async_get(entity_state.entity_id)
-    return entity
-
-def get_device_from_device_id(hass: HomeAssistant, device_id: str) -> Optional[DeviceEntry]:
-    device_registry : DeviceRegistry = helpers.device_registry.async_get(hass)
-    device : DeviceEntry | None = device_registry.async_get(device_id)
-    return device
-
-def get_area_from_area_id(hass: HomeAssistant, area_id: str) -> Optional[AreaEntry]:
-    area_registry : AreaRegistry = helpers.area_registry.async_get(hass)
-    area : AreaEntry | None = area_registry.async_get_area(area_id)
-    return area
-
-def get_device_from_state(hass: HomeAssistant, entity_state: State) -> Optional[DeviceEntry]:
-    entity = get_entity_from_state(hass, entity_state)
-    if not entity or entity.device_id is None:
-        return None
-    return get_device_from_device_id(hass, entity.device_id)
-
-def get_area_from_state(hass: HomeAssistant, entity_state: State) -> Optional[AreaEntry]:
-    entity = get_entity_from_state(hass, entity_state)
-    if not entity:
-        return None
-    if not entity.area_id is None:
-        area = get_area_from_area_id(hass, entity.area_id)
-        if not area is None:
-            return area
-    if entity.device_id is None:
-        return None
-    device = get_device_from_device_id(hass, entity.device_id)
-    if device is None or device.area_id is None:
-        return None
-    return get_area_from_area_id(hass, device.area_id)
-
-def create_device_filter(device_filter_fn: DeviceFilterFn) -> FilterFn:
-    def filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-        device = get_device_from_state(hass, entity_state)
-        if not device:
-            return False
-        return device_filter_fn(hass, device)
-    return filter_fn
-
-def create_area_filter(area_filter_fn: AreaFilterFn) -> FilterFn:
-    def filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-        area = get_area_from_state(hass, entity_state)
-        if area is None:
-            return False
-        return area_filter_fn(hass, area)
-    return filter_fn
-
-def create_entity_filter(entity_filter_fn: EntityFilterFn) -> FilterFn:
-    def filter_fn(hass: HomeAssistant, entity_state: State) -> bool:
-        entity = get_entity_from_state(hass, entity_state)
-        if entity is None:
-            return False
-        return entity_filter_fn(hass, entity)
-    return filter_fn
-
-
-
-filter_constructors : Dict[str, FilterFnBuilder] = {
-        #"options": lambda pattern: lambda hass, entity_state: True,
-        #"sort": lambda pattern: lambda hass, entity_state: True,
-        "domain": lambda pattern: lambda hass,  entity_state: match(pattern, entity_state.entity_id.split(".")[0]),
-        "entity_id": lambda pattern: lambda hass, entity_state: match(pattern, entity_state.entity_id),
-        "state": lambda pattern: lambda hass, entity_state: match(pattern, entity_state.state),
-        "name": lambda pattern: lambda hass, entity_state: match(pattern, entity_state.attributes.get("friendly_name")),
-        "group": create_group_filter,
-        "attributes": create_attributes_filter,
-        "not": create_not_filter,
-        "or": create_or_filter,
-        "device": lambda pattern: create_device_filter(lambda hass, device: (match(pattern, device.name_by_user) or match(pattern, device.name))),
-        "device_manufacturer": lambda pattern: create_device_filter(lambda hass, device: match(pattern, device.manufacturer)),
-        "device_model": lambda pattern: create_device_filter(lambda hass, device: match(pattern, device.model)),
-        "area": lambda pattern: create_area_filter(lambda hass, area: (match(pattern, area.name) or match(pattern, area.id))),
-        "entity_category": lambda pattern: create_entity_filter(lambda hass, entity: match(pattern, entity.entity_category)),
-        # Skipping last_changed, last_updated, last_triggered, hate these
-        "integration": lambda pattern: create_entity_filter(lambda hass, entity: match(pattern, entity.platform)),
-}
-
-async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    @callback
-    def call_array(call: ServiceCall) -> None:
-        _LOGGER.warning('with_auto_entities.call_array called!')
+def async_find_entities(hass: HomeAssistant, includes: List[Dict[str, object]], excludes: List[Dict[str, object]]) -> List[State]:
         entities : List[State] = []
         # Build up list of entities using includes
-        for include in call.data.get("includes", []):
+        for include in includes:
             filter_fn = create_filter_from_dictionary(include)
             include_entities = [entity_state for entity_state in hass.states.async_all() if filter_fn(hass, entity_state)]
             entities = entities + include_entities
         # Remove using excludes
-        for exclude in call.data.get("excludes", []):
+        for exclude in excludes:
             filter_fn = create_filter_from_dictionary(exclude)
             entities = [entity_state for entity_state in entities if not filter_fn(hass, entity_state)]
-        _LOGGER.warning(f'All entities: {[entity.entity_id for entity in entities]}')
+        return entities
 
-    hass.services.async_register(DOMAIN, "call_array", call_array)
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    @callback
+    async def with_array(call: ServiceCall) -> None:
+        _LOGGER.warning('with_auto_entities.with_array called!')
+
+        # Build up data for service call
+        call_data = call.data.get("data", {})
+        call_domain, call_service = call.data.get("service").split(".",1)
+        call_array_key = call.data.get("array_key", "entity_id")
+        entities : List[State] = async_find_entities(hass, call.data.get("includes", []), call.data.get("excludes", []))
+        call_data[call_array_key] = [entity.entity_id for entity in entities]
+
+        _LOGGER.warning(f'Calling {call_domain} {call_service} with {call_data}')
+
+        await hass.services.async_call(call_domain, call_service, call_data)
+        _LOGGER.warning(f'Done')
+
+    async def update_group(call: ServiceCall) -> None:
+        entity_registry : EntityRegistry = helpers.entity_registry.async_get(hass)
+        group_entity_id = call.data.get("entity_id")
+        entity : EntityEntry | None = entity_registry.async_get(group_entity_id)
+        if entity is None:
+            _LOGGER.warning(f"No group entity found with name '{group_entity_id}'")
+            return
+        config_entry_id = entity.config_entry_id
+        if config_entry_id is None:
+            _LOGGER.warning(f"No config entry associated with '{group_entity_id}'")
+            return
+
+        config_entry : ConfigEntry = hass.config_entries.async_get_entry(config_entry_id)
+        if config_entry_id is None:
+            _LOGGER.warning(f"Config entry for '{group_entity_id}' not found")
+            return
+
+        if config_entry.domain != "group":
+            _LOGGER.warning(f"'{group_entity_id}' is not a group")
+            return
+
+        new_options = config_entry.options.copy()
+        filtered_entities = async_find_entities(hass, call.data.get("includes", []), call.data.get("excludes", []))
+        new_options['entities'] = [entity.entity_id for entity in filtered_entities]
+
+        hass.config_entries.async_update_entry(config_entry, options=new_options)
+        _LOGGER.warning(f"'{group_entity_id}' updated with members: {new_options['entities']}")
+
+    hass.services.async_register(DOMAIN, SERVICE_WITH_ARRAY, with_array)
+    hass.services.async_register(DOMAIN, SERVICE_UPDATE_GROUP, update_group)
     return True
