@@ -29,6 +29,11 @@ def async_find_entities(hass: HomeAssistant, includes: List[Dict[str, object]], 
         return entities
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Set up this integration using YAML is not supported."""
+    return True
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up this integration using ConfigFlow UI."""
     @callback
     async def with_array(call: ServiceCall) -> None:
         # Build up data for service call
